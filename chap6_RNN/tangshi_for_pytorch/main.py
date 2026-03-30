@@ -4,11 +4,15 @@ import torch
 from torch.autograd import Variable
 import torch.optim as optim
 
-import rnn
+import rnn as rnn_lstm
 
 start_token = 'G'
 end_token = 'E'
 batch_size = 64
+
+# 自动选择 GPU 或 CPU
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
 
 
 def process_poems1(file_name):
@@ -34,7 +38,6 @@ def process_poems1(file_name):
                 content = start_token + content + end_token
                 poems.append(content)
             except ValueError as e:
-                print("error")
                 pass
     # 按诗的字数排序
     poems = sorted(poems, key=lambda line: len(line))
@@ -130,6 +133,7 @@ def run_training():
     torch.manual_seed(5)
     word_embedding = rnn_lstm.word_embedding( vocab_length= len(word_to_int) + 1 , embedding_dim= 100)
     rnn_model = rnn_lstm.RNN_model(batch_sz = BATCH_SIZE,vocab_len = len(word_to_int) + 1 ,word_embedding = word_embedding ,embedding_dim= 100, lstm_hidden_dim=128)
+    rnn_model = rnn_model.to(device)  # 模型移到GPU
 
     # optimizer = optim.Adam(rnn_model.parameters(), lr= 0.001)
     optimizer=optim.RMSprop(rnn_model.parameters(), lr=0.01)
@@ -148,8 +152,8 @@ def run_training():
             for index in range(BATCH_SIZE):
                 x = np.array(batch_x[index], dtype = np.int64)
                 y = np.array(batch_y[index], dtype = np.int64)
-                x = Variable(torch.from_numpy(np.expand_dims(x,axis=1)))
-                y = Variable(torch.from_numpy(y ))
+                x = Variable(torch.from_numpy(np.expand_dims(x,axis=1))).to(device)
+                y = Variable(torch.from_numpy(y )).to(device)
                 pre = rnn_model(x)
                 loss += loss_fun(pre , y)
                 if index == 0:
@@ -161,7 +165,7 @@ def run_training():
             print("epoch  ",epoch,'batch number',batch,"loss is: ", loss.data.tolist())
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm(rnn_model.parameters(), 1)
+            torch.nn.utils.clip_grad_norm_(rnn_model.parameters(), 1)
             optimizer.step()
 
             if batch % 20 ==0:
@@ -180,54 +184,52 @@ def to_word(predict, vocabs):  # 预测的结果转化成汉字
 
 
 def pretty_print_poem(poem):  # 令打印的结果更工整
-    shige=[]
-    for w in poem:
-        if w == start_token or w == end_token:
-            break
-        shige.append(w)
+    # 去掉起始和结束标记
+    poem = poem.replace(start_token, '').replace(end_token, '')
     poem_sentences = poem.split('。')
     for s in poem_sentences:
-        if s != '' and len(s) > 10:
+        if s != '' and len(s) > 0:
             print(s + '。')
 
 
-def gen_poem(begin_word):
-    # poems_vector, word_int_map, vocabularies = process_poems2('./tangshi.txt')  #  use the other dataset to train the network
-    poems_vector, word_int_map, vocabularies = process_poems1('./poems.txt')
-    word_embedding = rnn_lstm.word_embedding(vocab_length=len(word_int_map) + 1, embedding_dim=100)
-    rnn_model = rnn_lstm.RNN_model(batch_sz=64, vocab_len=len(word_int_map) + 1, word_embedding=word_embedding,
-                                   embedding_dim=100, lstm_hidden_dim=128)
-
-    rnn_model.load_state_dict(torch.load('./poem_generator_rnn'))
+def gen_poem(begin_word, word_int_map, vocabularies, rnn_model):
+    """使用已加载的模型生成诗歌"""
+    rnn_model.eval()
 
     # 指定开始的字
-
     poem = begin_word
     word = begin_word
     while word != end_token:
         input = np.array([word_int_map[w] for w in poem],dtype= np.int64)
-        input = Variable(torch.from_numpy(input))
+        input = Variable(torch.from_numpy(input)).to(device)
         output = rnn_model(input, is_test=True)
-        word = to_word(output.data.tolist()[-1], vocabularies)
+        word = to_word(output.data.cpu().tolist()[-1], vocabularies)
         poem += word
-        # print(word)
-        # print(poem)
         if len(poem) > 30:
             break
     return poem
 
 
 
-run_training()  # 如果不是训练阶段 ，请注销这一行 。 网络训练时间很长。
+#run_training()  # 如果不是训练阶段 ，请注销这一行 。 网络训练时间很长。
 
 
-pretty_print_poem(gen_poem("日"))
-pretty_print_poem(gen_poem("红"))
-pretty_print_poem(gen_poem("山"))
-pretty_print_poem(gen_poem("夜"))
-pretty_print_poem(gen_poem("湖"))
-pretty_print_poem(gen_poem("湖"))
-pretty_print_poem(gen_poem("湖"))
-pretty_print_poem(gen_poem("君"))
+# 加载数据和模型（只加载一次）
+poems_vector, word_int_map, vocabularies = process_poems1('./poems.txt')
+word_embedding = rnn_lstm.word_embedding(vocab_length=len(word_int_map) + 1, embedding_dim=100)
+gen_model = rnn_lstm.RNN_model(batch_sz=64, vocab_len=len(word_int_map) + 1, word_embedding=word_embedding,
+                               embedding_dim=100, lstm_hidden_dim=128)
+gen_model.load_state_dict(torch.load('./poem_generator_rnn', map_location=device))
+gen_model = gen_model.to(device)
+
+# 用指定开头字生成诗歌
+begin_words = ['日', '红', '山', '夜', '湖', '海', '月']
+print("\n" + "=" * 50)
+print("生成诗歌结果：")
+print("=" * 50)
+for w in begin_words:
+    print(f"\n【{w}】开头：")
+    pretty_print_poem(gen_poem(w, word_int_map, vocabularies, gen_model))
+    print("-" * 30)
 
 
